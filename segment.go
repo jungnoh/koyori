@@ -15,21 +15,21 @@ var errEmptySegment = errors.New("segment is empty")
 var segmentFilenameRegex = regexp.MustCompile(`^(\d+)\.queue`)
 
 type segment[T any] struct {
-	folderPath    string
-	segmentNumber int
-	file          *os.File
-	converter     Converter[T]
-	removeCount   int
-	objects       []T
-	fileLock      sync.Mutex
 	options       *QueueOptions[T]
+	file          *os.File
+	segmentNumber int
+	fileLock      sync.Mutex
+
+	objects     []T
+	removeCount int
+	objectCount int
 }
 
 func (s *segment[T]) add(obj T) error {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 
-	buf, err := s.converter.Marshal(obj)
+	buf, err := s.options.Converter.Marshal(obj)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal object")
 	}
@@ -45,6 +45,7 @@ func (s *segment[T]) add(obj T) error {
 	}
 
 	s.objects = append(s.objects, obj)
+	s.objectCount++
 	if s.options.AlwaysFlush {
 		err = s.flushLocked()
 		return errors.Wrap(err, "failed to flushLocked")
@@ -64,6 +65,7 @@ func (s *segment[T]) remove() (*T, error) {
 	// Remove from queue first
 	popped := s.objects[0]
 	s.objects = s.objects[1:]
+	s.objectCount--
 	if _, err := s.file.Write([]byte{0, 0, 0, 0}); err != nil {
 		return nil, errors.Wrap(err, "failed to write deletion to disk")
 	}
@@ -79,15 +81,14 @@ func (s *segment[T]) remove() (*T, error) {
 func (s *segment[T]) count() int {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
-
-	return len(s.objects)
+	return s.objectCount
 }
 
 func (s *segment[T]) countOnDisk() int {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 
-	return len(s.objects) + s.removeCount
+	return s.objectCount + s.removeCount
 }
 
 func (s *segment[T]) flushLocked() error {
@@ -105,6 +106,7 @@ func (s *segment[T]) load() error {
 	}
 	s.removeCount = 0
 	s.objects = []T{}
+	s.objectCount = 0
 
 	if file, err := os.OpenFile(s.filePath(), os.O_RDONLY, os.ModePerm); err == nil {
 		s.file = file
@@ -128,16 +130,18 @@ func (s *segment[T]) load() error {
 			}
 			s.objects = s.objects[1:]
 			s.removeCount++
+			s.objectCount--
 		} else {
 			buf := make([]byte, length)
 			if n, err := io.ReadFull(s.file, buf); err != nil {
 				return errors.Wrapf(err, "error reading object (read %d bytes)", n)
 			}
-			obj, err := s.converter.Unmarshal(buf)
+			obj, err := s.options.Converter.Unmarshal(buf)
 			if err != nil {
 				return errors.Wrap(err, "failed to unmarshal object")
 			}
 			s.objects = append(s.objects, obj)
+			s.objectCount++
 		}
 	}
 	return nil
@@ -158,7 +162,7 @@ func (s *segment[T]) deleteSegment() error {
 }
 
 func (s *segment[T]) filePath() string {
-	return path.Join(s.folderPath, s.filename())
+	return path.Join(s.options.FolderPath, s.filename())
 }
 
 func (s *segment[T]) filename() string {
@@ -167,10 +171,8 @@ func (s *segment[T]) filename() string {
 
 func newSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
 	seg := segment[T]{
-		folderPath:    options.FolderPath,
-		segmentNumber: segmentNumber,
-		converter:     options.Converter,
 		options:       options,
+		segmentNumber: segmentNumber,
 	}
 	file, err := os.OpenFile(seg.filePath(), os.O_APPEND|os.O_CREATE|os.O_TRUNC|os.O_WRONLY, seg.options.FileMode)
 	if err != nil {
@@ -183,10 +185,8 @@ func newSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T],
 
 func readSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
 	seg := segment[T]{
-		folderPath:    options.FolderPath,
-		segmentNumber: segmentNumber,
-		converter:     options.Converter,
 		options:       options,
+		segmentNumber: segmentNumber,
 	}
 	if err := seg.load(); err != nil {
 		return segment[T]{}, errors.Wrap(err, "failed to read segment file")
