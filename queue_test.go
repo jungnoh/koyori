@@ -66,7 +66,6 @@ func TestQueuePersist(t *testing.T) {
 	assert.Nil(t, queue.Enqueue("d"))
 	assert.Nil(t, queue.Enqueue("e"))
 	assert.Nil(t, queue.Close())
-
 	queue, err = koyori.NewQueue(opts)
 	assert.Nil(t, err)
 	assertDequeue(t, &queue, "a")

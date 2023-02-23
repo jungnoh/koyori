@@ -20,14 +20,20 @@ type segment[T any] struct {
 	segmentNumber int
 	fileLock      sync.Mutex
 
-	objects     []T
-	removeCount int
-	objectCount int
+	objects       []T
+	removeCount   int
+	objectCount   int
+	objectsLoaded bool
 }
 
 func (s *segment[T]) add(obj T) error {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
+	if !s.objectsLoaded {
+		if err := s.load(true); err != nil {
+			return errors.Wrap(err, "error while loading objects")
+		}
+	}
 
 	buf, err := s.options.Converter.Marshal(obj)
 	if err != nil {
@@ -57,8 +63,13 @@ func (s *segment[T]) add(obj T) error {
 func (s *segment[T]) remove() (*T, error) {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
+	if !s.objectsLoaded {
+		if err := s.load(true); err != nil {
+			return nil, errors.Wrap(err, "error while loading objects")
+		}
+	}
 
-	if len(s.objects) == 0 {
+	if s.objectCount == 0 {
 		return nil, errEmptySegment
 	}
 
@@ -91,14 +102,28 @@ func (s *segment[T]) countOnDisk() int {
 	return s.objectCount + s.removeCount
 }
 
+func (s *segment[T]) openFileForWrite(additionalFlags int) error {
+	file, err := os.OpenFile(s.filePath(), os.O_APPEND|os.O_WRONLY|additionalFlags, s.options.FileMode)
+	if err != nil {
+		return errors.Wrap(err, "failed to open segment file")
+	}
+	s.file = file
+	return nil
+}
+
 func (s *segment[T]) flushLocked() error {
 	return errors.Wrap(s.file.Sync(), "failed to sync file")
 }
 
-func (s *segment[T]) load() error {
-	s.fileLock.Lock()
-	defer s.fileLock.Unlock()
+func (s *segment[T]) load(loadObjects bool) error {
+	if err := s._load(loadObjects); err != nil {
+		return err
+	}
+	s.objectsLoaded = loadObjects
+	return s.openFileForWrite(0)
+}
 
+func (s *segment[T]) _load(loadObjects bool) error {
 	if s.file != nil {
 		if err := s.file.Close(); err != nil {
 			return errors.Wrap(err, "failed to close existing file")
@@ -125,25 +150,34 @@ func (s *segment[T]) load() error {
 		}
 		length := binary.LittleEndian.Uint32(lengthBuf)
 		if length == 0 {
-			if len(s.objects) == 0 {
+			if s.objectCount == 0 {
 				return errors.New("Found deletion marker, but no objects are left")
 			}
-			s.objects = s.objects[1:]
+			if loadObjects {
+				s.objects = s.objects[1:]
+			}
 			s.removeCount++
 			s.objectCount--
 		} else {
-			buf := make([]byte, length)
-			if n, err := io.ReadFull(s.file, buf); err != nil {
-				return errors.Wrapf(err, "error reading object (read %d bytes)", n)
+			if loadObjects {
+				buf := make([]byte, length)
+				if n, err := io.ReadFull(s.file, buf); err != nil {
+					return errors.Wrapf(err, "error reading object (read %d bytes)", n)
+				}
+				obj, err := s.options.Converter.Unmarshal(buf)
+				if err != nil {
+					return errors.Wrap(err, "failed to unmarshal object")
+				}
+				s.objects = append(s.objects, obj)
+			} else {
+				if _, err := s.file.Seek(int64(length), io.SeekCurrent); err != nil {
+					return errors.Wrapf(err, "error seeking %d bytes", length)
+				}
 			}
-			obj, err := s.options.Converter.Unmarshal(buf)
-			if err != nil {
-				return errors.Wrap(err, "failed to unmarshal object")
-			}
-			s.objects = append(s.objects, obj)
 			s.objectCount++
 		}
 	}
+
 	return nil
 }
 
@@ -174,27 +208,16 @@ func newSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T],
 		options:       options,
 		segmentNumber: segmentNumber,
 	}
-	file, err := os.OpenFile(seg.filePath(), os.O_APPEND|os.O_CREATE|os.O_TRUNC|os.O_WRONLY, seg.options.FileMode)
-	if err != nil {
-		return segment[T]{}, errors.Wrap(err, "failed to create segment file")
-	}
-	seg.file = file
-
-	return seg, nil
+	return seg, errors.Wrap(seg.openFileForWrite(os.O_TRUNC|os.O_CREATE), "failed to create segment file")
 }
 
-func readSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
+func openSegment[T any](loadObjects bool, segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
 	seg := segment[T]{
 		options:       options,
 		segmentNumber: segmentNumber,
 	}
-	if err := seg.load(); err != nil {
+	if err := seg.load(loadObjects); err != nil {
 		return segment[T]{}, errors.Wrap(err, "failed to read segment file")
 	}
-	file, err := os.OpenFile(seg.filePath(), os.O_APPEND|os.O_WRONLY, seg.options.FileMode)
-	if err != nil {
-		return segment[T]{}, errors.Wrap(err, "failed to open segment file")
-	}
-	seg.file = file
-	return seg, nil
+	return seg, errors.Wrap(seg.openFileForWrite(0), "failed to open segment file")
 }

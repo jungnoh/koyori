@@ -59,7 +59,7 @@ func (q *Queue[T]) Dequeue() (*T, error) {
 		} else if q.segmentCount() == 2 {
 			q.firstSegment = q.lastSegment
 		} else {
-			seg, err := readSegment(q.firstSegment.segmentNumber+1, &q.options)
+			seg, err := openSegment(false, q.firstSegment.segmentNumber+1, &q.options)
 			if err != nil {
 				return item, errors.Wrap(err, "error creating new segment")
 			}
@@ -114,7 +114,7 @@ func (q *Queue[T]) load() error {
 		q.firstSegment = &segment
 		q.lastSegment = &segment
 	} else if count == 1 {
-		segment, err := readSegment(minSegment, &q.options)
+		segment, err := openSegment(false, minSegment, &q.options)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read segment (#%d)", minSegment)
 		}
@@ -122,11 +122,11 @@ func (q *Queue[T]) load() error {
 		q.firstSegment = &segment
 		q.lastSegment = &segment
 	} else {
-		firstSegment, err := readSegment(minSegment, &q.options)
+		firstSegment, err := openSegment(false, minSegment, &q.options)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read segment (#%d)", minSegment)
 		}
-		lastSegment, err := readSegment(maxSegment, &q.options)
+		lastSegment, err := openSegment(false, maxSegment, &q.options)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read segment (#%d)", maxSegment)
 		}
