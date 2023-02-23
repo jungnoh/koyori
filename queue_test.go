@@ -26,6 +26,12 @@ func assertDequeue[T any](t *testing.T, queue *koyori.Queue[T], expected T) {
 	assert.Equal(t, expected, *item)
 }
 
+func assertDequeueMany[T any](t *testing.T, queue *koyori.Queue[T], count int, expected []T) {
+	items, err := queue.DequeueMany(count)
+	assert.Nil(t, err)
+	assert.Equal(t, expected, items)
+}
+
 func TestQueueBasicInsert(t *testing.T) {
 	queue, err := koyori.NewQueue(koyori.QueueOptions[string]{
 		Converter:            StringConverter{},
@@ -74,4 +80,50 @@ func TestQueuePersist(t *testing.T) {
 	assertDequeue(t, &queue, "c")
 	assertDequeue(t, &queue, "d")
 	assertDequeue(t, &queue, "e")
+}
+
+func TestQueueBatch(t *testing.T) {
+	opts := koyori.QueueOptions[string]{
+		Converter:            StringConverter{},
+		FolderPath:           path.Join(os.TempDir(), fmt.Sprintf("%d", time.Now().UnixNano())),
+		FileMode:             os.ModePerm,
+		MaxObjectsPerSegment: 2,
+	}
+
+	queue, err := koyori.NewQueue(opts)
+	assert.Nil(t, err)
+
+	assert.Nil(t, queue.EnqueueMany([]string{"a", "b", "c", "d", "e"}))
+	assertDequeueMany(t, &queue, 2, []string{"a", "b"})
+	assertDequeueMany(t, &queue, 4, []string{"c", "d", "e"})
+
+	assert.Nil(t, queue.EnqueueMany([]string{"a", "b", "c", "d", "e", "f"}))
+	assertDequeueMany(t, &queue, 3, []string{"a", "b", "c"})
+	assertDequeue(t, &queue, "d")
+	assertDequeueMany(t, &queue, 1, []string{"e"})
+	assert.Nil(t, queue.EnqueueMany([]string{"g"}))
+	assertDequeueMany(t, &queue, 2, []string{"f", "g"})
+}
+
+func TestQueueCapacityChange(t *testing.T) {
+	opts := koyori.QueueOptions[string]{
+		Converter:            StringConverter{},
+		FolderPath:           path.Join(os.TempDir(), fmt.Sprintf("%d", time.Now().UnixNano())),
+		FileMode:             os.ModePerm,
+		MaxObjectsPerSegment: 2,
+	}
+
+	queue, err := koyori.NewQueue(opts)
+	assert.Nil(t, err)
+	assert.Nil(t, queue.EnqueueMany([]string{"a", "b", "c", "d", "e"}))
+	assert.Nil(t, queue.Close())
+
+	opts.MaxObjectsPerSegment = 5
+	queue, err = koyori.NewQueue(opts)
+	assert.Nil(t, err)
+	assertDequeueMany(t, &queue, 2, []string{"a", "b"})
+	assert.Nil(t, queue.EnqueueMany([]string{"a", "b", "c", "d", "e"}))
+	assertDequeueMany(t, &queue, 4, []string{"c", "d", "e", "a"})
+	assertDequeueMany(t, &queue, 3, []string{"b", "c", "d"})
+	assertDequeueMany(t, &queue, 2, []string{"e"})
 }

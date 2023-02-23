@@ -16,6 +16,7 @@ var segmentFilenameRegex = regexp.MustCompile(`^(\d+)\.queue`)
 
 type segment[T any] struct {
 	folderPath    string
+	capacity      int
 	segmentNumber int
 	file          *os.File
 	converter     Converter[T]
@@ -149,6 +150,11 @@ func (s *segment[T]) load() error {
 		return errors.Wrap(err, "failed to open file")
 	}
 
+	capacityBuf := make([]byte, 4)
+	if n, err := io.ReadFull(s.file, capacityBuf); err != nil {
+		return errors.Wrapf(err, "error reading header (read %d bytes)", n)
+	}
+	s.capacity = int(binary.LittleEndian.Uint32(capacityBuf))
 	for {
 		lengthBuf := make([]byte, 4)
 		if n, err := io.ReadFull(s.file, lengthBuf); err != nil {
@@ -201,8 +207,9 @@ func (s *segment[T]) filename() string {
 	return fmt.Sprintf("%05d.queue", s.segmentNumber)
 }
 
-func newSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
+func newSegment[T any](capacity, segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
 	seg := segment[T]{
+		capacity:      capacity,
 		folderPath:    options.FolderPath,
 		segmentNumber: segmentNumber,
 		converter:     options.Converter,
@@ -213,6 +220,12 @@ func newSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T],
 		return segment[T]{}, errors.Wrap(err, "failed to create segment file")
 	}
 	seg.file = file
+
+	capacityBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(capacityBytes, uint32(seg.capacity))
+	if _, err := seg.file.Write(capacityBytes); err != nil {
+		return segment[T]{}, errors.Wrap(err, "failed to write header")
+	}
 
 	return seg, nil
 }

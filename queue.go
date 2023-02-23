@@ -22,12 +22,38 @@ func (q *Queue[T]) Enqueue(item T) error {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
-	if q.lastSegment.countOnDisk() >= q.options.MaxObjectsPerSegment {
+	if q.lastSegment.countOnDisk() >= q.lastSegment.capacity {
 		if err := q.addSegmentLocked(); err != nil {
 			return errors.Wrap(err, "failed to add new segment")
 		}
 	}
 	return errors.Wrap(q.lastSegment.add(item), "failed to insert")
+}
+
+func (q *Queue[T]) EnqueueMany(items []T) error {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	originalLen := len(items)
+	for len(items) > 0 {
+		enqueueCount := len(items)
+		allowedEnqueueCount := q.lastSegment.capacity - q.lastSegment.countOnDisk()
+		if allowedEnqueueCount < enqueueCount {
+			enqueueCount = allowedEnqueueCount
+		}
+		if enqueueCount > 0 {
+			if err := q.lastSegment.addMany(items[0:enqueueCount]); err != nil {
+				return errors.Wrap(err, "failed to enqueueMany")
+			}
+			items = items[enqueueCount:]
+		}
+		if q.lastSegment.countOnDisk() >= q.lastSegment.capacity {
+			if err := q.addSegmentLocked(); err != nil {
+				return errors.Wrapf(err, "failed to add new segment (added %d)", originalLen-len(items))
+			}
+		}
+	}
+	return nil
 }
 
 func (q *Queue[T]) Dequeue() (*T, error) {
@@ -44,29 +70,53 @@ func (q *Queue[T]) Dequeue() (*T, error) {
 	if q.firstSegment.count() > 0 {
 		return item, nil
 	}
-	if q.firstSegment.countOnDisk() >= q.options.MaxObjectsPerSegment {
-		if err := q.firstSegment.deleteSegment(); err != nil {
-			return item, errors.Wrap(err, "failed to delete segment")
-		}
-		if q.segmentCount() == 1 {
-			segment, err := newSegment(q.segmentNumber+1, &q.options)
-			if err != nil {
-				return item, errors.Wrap(err, "failed to add new segment")
-			}
-			q.segmentNumber++
-			q.firstSegment = &segment
-			q.lastSegment = &segment
-		} else if q.segmentCount() == 2 {
-			q.firstSegment = q.lastSegment
-		} else {
-			seg, err := readSegment(q.firstSegment.segmentNumber+1, &q.options)
-			if err != nil {
-				return item, errors.Wrap(err, "error creating new segment")
-			}
-			q.firstSegment = &seg
+	if q.firstSegment.countOnDisk() >= q.firstSegment.capacity {
+		if err := q.closeFullFirstSegment(); err != nil {
+			return item, err
 		}
 	}
 	return item, nil
+}
+
+func (q *Queue[T]) DequeueMany(count int) ([]T, error) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	results := [][]T{}
+	for {
+		removed, err := q.firstSegment.removeMany(count)
+		if err != nil {
+			if err == errEmptySegment {
+				break
+			}
+			return []T{}, errors.Wrap(err, "failed to dequeueMany")
+		}
+		results = append(results, removed)
+		count -= len(removed)
+		if count == 0 || len(removed) == 0 || q.firstSegment.countOnDisk() < q.firstSegment.capacity {
+			break
+		}
+		if err := q.closeFullFirstSegment(); err != nil {
+			return []T{}, errors.Wrap(err, "failed to close segment")
+		}
+	}
+	if q.firstSegment.countOnDisk() >= q.firstSegment.capacity {
+		if err := q.closeFullFirstSegment(); err != nil {
+			return []T{}, errors.Wrap(err, "failed to close segment")
+		}
+	}
+
+	lenSum := 0
+	for _, v := range results {
+		lenSum += len(v)
+	}
+	result := make([]T, lenSum)
+	lenSum = 0
+	for _, v := range results {
+		copy(result[lenSum:], v)
+		lenSum += len(v)
+	}
+	return result, nil
 }
 
 func (q *Queue[T]) Close() error {
@@ -82,13 +132,37 @@ func (q *Queue[T]) Close() error {
 	return nil
 }
 
+func (q *Queue[T]) closeFullFirstSegment() error {
+	if err := q.firstSegment.deleteSegment(); err != nil {
+		return errors.Wrap(err, "failed to delete segment")
+	}
+	if q.segmentCount() == 1 {
+		segment, err := newSegment(q.options.MaxObjectsPerSegment, q.segmentNumber+1, &q.options)
+		if err != nil {
+			return errors.Wrap(err, "failed to add new segment")
+		}
+		q.segmentNumber++
+		q.firstSegment = &segment
+		q.lastSegment = &segment
+	} else if q.segmentCount() == 2 {
+		q.firstSegment = q.lastSegment
+	} else {
+		seg, err := readSegment(q.firstSegment.segmentNumber+1, &q.options)
+		if err != nil {
+			return errors.Wrap(err, "error creating new segment")
+		}
+		q.firstSegment = &seg
+	}
+	return nil
+}
+
 func (q *Queue[T]) addSegmentLocked() error {
 	if q.segmentCount() > 1 {
 		if err := q.lastSegment.close(); err != nil {
 			return errors.Wrap(err, "failed to close segment file")
 		}
 	}
-	segment, err := newSegment(q.segmentNumber+1, &q.options)
+	segment, err := newSegment(q.options.MaxObjectsPerSegment, q.segmentNumber+1, &q.options)
 	if err != nil {
 		return errors.Wrap(err, "failed to add new segment")
 	}
@@ -106,7 +180,7 @@ func (q *Queue[T]) load() error {
 		return errors.Wrap(err, "error while reading queue directory")
 	}
 	if count == 0 {
-		segment, err := newSegment(1, &q.options)
+		segment, err := newSegment(q.options.MaxObjectsPerSegment, 1, &q.options)
 		if err != nil {
 			return errors.Wrap(err, "failed to create first segment")
 		}
