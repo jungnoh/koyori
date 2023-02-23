@@ -12,8 +12,8 @@ var ErrEmpty = errors.New("queue is empty")
 
 type Queue[T any] struct {
 	options       QueueOptions[T]
-	firstSegment  *segment[T]
-	lastSegment   *segment[T]
+	firstSegment  *Segment[T]
+	lastSegment   *Segment[T]
 	segmentNumber int
 	mutex         sync.Mutex
 }
@@ -22,36 +22,36 @@ func (q *Queue[T]) Enqueue(item T) error {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
-	if q.lastSegment.countOnDisk() >= q.options.MaxObjectsPerSegment {
+	if q.lastSegment.CountOnDisk() >= q.options.MaxObjectsPerSegment {
 		if err := q.addSegmentLocked(); err != nil {
-			return errors.Wrap(err, "failed to add new segment")
+			return errors.Wrap(err, "failed to Add new segment")
 		}
 	}
-	return errors.Wrap(q.lastSegment.add(item), "failed to insert")
+	return errors.Wrap(q.lastSegment.Add(item), "failed to insert")
 }
 
 func (q *Queue[T]) Dequeue() (*T, error) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
-	item, err := q.firstSegment.remove()
+	item, err := q.firstSegment.Remove()
 	if err != nil {
 		if err == errEmptySegment {
 			return nil, ErrEmpty
 		}
 		return nil, errors.Wrap(err, "failed to dequeue from segment")
 	}
-	if q.firstSegment.count() > 0 {
+	if q.firstSegment.Count() > 0 {
 		return item, nil
 	}
-	if q.firstSegment.countOnDisk() >= q.options.MaxObjectsPerSegment {
-		if err := q.firstSegment.deleteSegment(); err != nil {
+	if q.firstSegment.CountOnDisk() >= q.options.MaxObjectsPerSegment {
+		if err := q.firstSegment.DeleteSelf(); err != nil {
 			return item, errors.Wrap(err, "failed to delete segment")
 		}
 		if q.segmentCount() == 1 {
-			segment, err := newSegment(q.segmentNumber+1, &q.options)
+			segment, err := NewSegment(q.segmentNumber+1, &q.options)
 			if err != nil {
-				return item, errors.Wrap(err, "failed to add new segment")
+				return item, errors.Wrap(err, "failed to Add new segment")
 			}
 			q.segmentNumber++
 			q.firstSegment = &segment
@@ -59,7 +59,7 @@ func (q *Queue[T]) Dequeue() (*T, error) {
 		} else if q.segmentCount() == 2 {
 			q.firstSegment = q.lastSegment
 		} else {
-			seg, err := openSegment(false, q.firstSegment.segmentNumber+1, &q.options)
+			seg, err := OpenSegment(false, q.firstSegment.segmentNumber+1, &q.options)
 			if err != nil {
 				return item, errors.Wrap(err, "error creating new segment")
 			}
@@ -73,24 +73,24 @@ func (q *Queue[T]) Close() error {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
-	if err := q.firstSegment.close(); err != nil {
-		return errors.Wrap(err, "failed to close segment file")
+	if err := q.firstSegment.Close(); err != nil {
+		return errors.Wrap(err, "failed to Close segment file")
 	}
-	if err := q.lastSegment.close(); err != nil {
-		return errors.Wrap(err, "failed to close segment file")
+	if err := q.lastSegment.Close(); err != nil {
+		return errors.Wrap(err, "failed to Close segment file")
 	}
 	return nil
 }
 
 func (q *Queue[T]) addSegmentLocked() error {
 	if q.segmentCount() > 1 {
-		if err := q.lastSegment.close(); err != nil {
-			return errors.Wrap(err, "failed to close segment file")
+		if err := q.lastSegment.Close(); err != nil {
+			return errors.Wrap(err, "failed to Close segment file")
 		}
 	}
-	segment, err := newSegment(q.segmentNumber+1, &q.options)
+	segment, err := NewSegment(q.segmentNumber+1, &q.options)
 	if err != nil {
-		return errors.Wrap(err, "failed to add new segment")
+		return errors.Wrap(err, "failed to Add new segment")
 	}
 	q.segmentNumber++
 	q.lastSegment = &segment
@@ -106,7 +106,7 @@ func (q *Queue[T]) load() error {
 		return errors.Wrap(err, "error while reading queue directory")
 	}
 	if count == 0 {
-		segment, err := newSegment(1, &q.options)
+		segment, err := NewSegment(1, &q.options)
 		if err != nil {
 			return errors.Wrap(err, "failed to create first segment")
 		}
@@ -114,7 +114,7 @@ func (q *Queue[T]) load() error {
 		q.firstSegment = &segment
 		q.lastSegment = &segment
 	} else if count == 1 {
-		segment, err := openSegment(false, minSegment, &q.options)
+		segment, err := OpenSegment(false, minSegment, &q.options)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read segment (#%d)", minSegment)
 		}
@@ -122,11 +122,11 @@ func (q *Queue[T]) load() error {
 		q.firstSegment = &segment
 		q.lastSegment = &segment
 	} else {
-		firstSegment, err := openSegment(false, minSegment, &q.options)
+		firstSegment, err := OpenSegment(false, minSegment, &q.options)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read segment (#%d)", minSegment)
 		}
-		lastSegment, err := openSegment(false, maxSegment, &q.options)
+		lastSegment, err := OpenSegment(false, maxSegment, &q.options)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read segment (#%d)", maxSegment)
 		}

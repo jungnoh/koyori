@@ -11,10 +11,10 @@ import (
 	"sync"
 )
 
-var errEmptySegment = errors.New("segment is empty")
+var errEmptySegment = errors.New("Segment is empty")
 var segmentFilenameRegex = regexp.MustCompile(`^(\d+)\.queue`)
 
-type segment[T any] struct {
+type Segment[T any] struct {
 	options       *QueueOptions[T]
 	file          *os.File
 	segmentNumber int
@@ -26,11 +26,11 @@ type segment[T any] struct {
 	objectsLoaded bool
 }
 
-func (s *segment[T]) add(obj T) error {
+func (s *Segment[T]) Add(obj T) error {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 	if !s.objectsLoaded {
-		if err := s.load(true); err != nil {
+		if err := s.Load(true); err != nil {
 			return errors.Wrap(err, "error while loading objects")
 		}
 	}
@@ -60,11 +60,11 @@ func (s *segment[T]) add(obj T) error {
 	}
 }
 
-func (s *segment[T]) remove() (*T, error) {
+func (s *Segment[T]) Remove() (*T, error) {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 	if !s.objectsLoaded {
-		if err := s.load(true); err != nil {
+		if err := s.Load(true); err != nil {
 			return nil, errors.Wrap(err, "error while loading objects")
 		}
 	}
@@ -89,44 +89,44 @@ func (s *segment[T]) remove() (*T, error) {
 	}
 }
 
-func (s *segment[T]) count() int {
+func (s *Segment[T]) Count() int {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 	return s.objectCount
 }
 
-func (s *segment[T]) countOnDisk() int {
+func (s *Segment[T]) CountOnDisk() int {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 
 	return s.objectCount + s.removeCount
 }
 
-func (s *segment[T]) openFileForWrite(additionalFlags int) error {
+func (s *Segment[T]) openFileForWrite(additionalFlags int) error {
 	file, err := os.OpenFile(s.filePath(), os.O_APPEND|os.O_WRONLY|additionalFlags, s.options.FileMode)
 	if err != nil {
-		return errors.Wrap(err, "failed to open segment file")
+		return errors.Wrap(err, "failed to open Segment file")
 	}
 	s.file = file
 	return nil
 }
 
-func (s *segment[T]) flushLocked() error {
+func (s *Segment[T]) flushLocked() error {
 	return errors.Wrap(s.file.Sync(), "failed to sync file")
 }
 
-func (s *segment[T]) load(loadObjects bool) error {
-	if err := s._load(loadObjects); err != nil {
+func (s *Segment[T]) Load(loadObjects bool) error {
+	if err := s.load(loadObjects); err != nil {
 		return err
 	}
 	s.objectsLoaded = loadObjects
 	return s.openFileForWrite(0)
 }
 
-func (s *segment[T]) _load(loadObjects bool) error {
+func (s *Segment[T]) load(loadObjects bool) error {
 	if s.file != nil {
 		if err := s.file.Close(); err != nil {
-			return errors.Wrap(err, "failed to close existing file")
+			return errors.Wrap(err, "failed to Close existing file")
 		}
 	}
 	s.removeCount = 0
@@ -181,43 +181,43 @@ func (s *segment[T]) _load(loadObjects bool) error {
 	return nil
 }
 
-func (s *segment[T]) close() error {
+func (s *Segment[T]) Close() error {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 
 	return s.file.Close()
 }
 
-func (s *segment[T]) deleteSegment() error {
+func (s *Segment[T]) DeleteSelf() error {
 	if err := s.file.Close(); err != nil {
-		return errors.Wrap(err, "failed to close file")
+		return errors.Wrap(err, "failed to Close file")
 	}
 	return errors.Wrap(os.Remove(s.filePath()), "failed to delete file")
 }
 
-func (s *segment[T]) filePath() string {
+func (s *Segment[T]) filePath() string {
 	return path.Join(s.options.FolderPath, s.filename())
 }
 
-func (s *segment[T]) filename() string {
+func (s *Segment[T]) filename() string {
 	return fmt.Sprintf("%05d.queue", s.segmentNumber)
 }
 
-func newSegment[T any](segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
-	seg := segment[T]{
+func NewSegment[T any](SegmentNumber int, options *QueueOptions[T]) (Segment[T], error) {
+	seg := Segment[T]{
 		options:       options,
-		segmentNumber: segmentNumber,
+		segmentNumber: SegmentNumber,
 	}
-	return seg, errors.Wrap(seg.openFileForWrite(os.O_TRUNC|os.O_CREATE), "failed to create segment file")
+	return seg, errors.Wrap(seg.openFileForWrite(os.O_TRUNC|os.O_CREATE), "failed to create Segment file")
 }
 
-func openSegment[T any](loadObjects bool, segmentNumber int, options *QueueOptions[T]) (segment[T], error) {
-	seg := segment[T]{
+func OpenSegment[T any](loadObjects bool, SegmentNumber int, options *QueueOptions[T]) (Segment[T], error) {
+	seg := Segment[T]{
 		options:       options,
-		segmentNumber: segmentNumber,
+		segmentNumber: SegmentNumber,
 	}
-	if err := seg.load(loadObjects); err != nil {
-		return segment[T]{}, errors.Wrap(err, "failed to read segment file")
+	if err := seg.Load(loadObjects); err != nil {
+		return Segment[T]{}, errors.Wrap(err, "failed to read Segment file")
 	}
-	return seg, errors.Wrap(seg.openFileForWrite(0), "failed to open segment file")
+	return seg, errors.Wrap(seg.openFileForWrite(0), "failed to open Segment file")
 }
