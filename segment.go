@@ -25,28 +25,35 @@ type segment[T any] struct {
 	options       *QueueOptions[T]
 }
 
-func (s *segment[T]) add(obj T) error {
+func (s *segment[T]) add(object T) error {
+	return s.addMany([]T{object})
+}
+
+func (s *segment[T]) addMany(objects []T) error {
 	s.fileLock.Lock()
 	defer s.fileLock.Unlock()
 
-	buf, err := s.converter.Marshal(obj)
-	if err != nil {
-		return errors.Wrap(err, "failed to marshal object")
+	for _, obj := range objects {
+		buf, err := s.converter.Marshal(obj)
+		if err != nil {
+			return errors.Wrap(err, "failed to marshal object")
+		}
+
+		bufLen := len(buf)
+		bufLenBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(bufLenBytes, uint32(bufLen))
+		if _, err := s.file.Write(bufLenBytes); err != nil {
+			return errors.Wrap(err, "failed to write object length")
+		}
+		if _, err := s.file.Write(buf); err != nil {
+			return errors.Wrap(err, "failed to write object")
+		}
+
+		s.objects = append(s.objects, obj)
 	}
 
-	bufLen := len(buf)
-	bufLenBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(bufLenBytes, uint32(bufLen))
-	if _, err := s.file.Write(bufLenBytes); err != nil {
-		return errors.Wrap(err, "failed to write object length")
-	}
-	if _, err := s.file.Write(buf); err != nil {
-		return errors.Wrap(err, "failed to write object")
-	}
-
-	s.objects = append(s.objects, obj)
 	if s.options.AlwaysFlush {
-		err = s.flushLocked()
+		err := s.flushLocked()
 		return errors.Wrap(err, "failed to flushLocked")
 	} else {
 		return nil
@@ -73,6 +80,35 @@ func (s *segment[T]) remove() (*T, error) {
 		return &popped, errors.Wrap(err, "failed to flushLocked")
 	} else {
 		return &popped, nil
+	}
+}
+
+func (s *segment[T]) removeMany(count int) ([]T, error) {
+	s.fileLock.Lock()
+	defer s.fileLock.Unlock()
+
+	if len(s.objects) == 0 {
+		return nil, errEmptySegment
+	}
+
+	// Remove from queue first
+	removeCount := count
+	if removeCount > len(s.objects) {
+		removeCount = len(s.objects)
+	}
+	popped := s.objects[0:removeCount]
+	s.objects = s.objects[removeCount:]
+
+	poppedMarkerBytes := make([]byte, 4*removeCount)
+	if _, err := s.file.Write(poppedMarkerBytes); err != nil {
+		return nil, errors.Wrap(err, "failed to write deletion to disk")
+	}
+	s.removeCount += removeCount
+	if s.options.AlwaysFlush {
+		err := s.flushLocked()
+		return popped, errors.Wrap(err, "failed to flushLocked")
+	} else {
+		return popped, nil
 	}
 }
 
